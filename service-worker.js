@@ -1,8 +1,8 @@
 /* Inventár projektov — offline prevádzka; používateľské údaje sú v localStorage, nie v cache. */
 const PREFIX = 'inventar-projektov-pwa-';
-const CACHE = PREFIX + 'v1';
+const CACHE = PREFIX + 'v05';
 const FILES = [
-  './', './index.html', './manifest.webmanifest',
+  './', './index.html', './cloud-sync.js', './manifest.webmanifest',
   './icon-192.png', './icon-512.png', './icon-maskable-512.png',
   './apple-touch-icon.png', './favicon.ico', './favicon.png'
 ];
