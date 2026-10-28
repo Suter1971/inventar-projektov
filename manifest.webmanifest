@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Osobné projekty",
   "short_name": "Osobné projekty",
-  "description": "Jednoduchý manažment osobných projektov a úloh.",
+  "description": "Jednoduchý katalóg projektov a úloh.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
