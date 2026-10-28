@@ -1,6 +1,6 @@
 /* Osobné projekty — offline prevádzka; používateľské údaje sú v localStorage, nie v cache. */
 const PREFIX = 'osobne-projekty-firebase-prod-pwa-';
-const CACHE = PREFIX + 'v06-release1';
+const CACHE = PREFIX + 'v06-release2-ios-auth';
 const FIREBASE_MODULES = [
   'https://www.gstatic.com/firebasejs/13.1.0/firebase-app.js',
   'https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js',

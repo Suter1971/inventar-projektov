@@ -2,7 +2,7 @@
    No Google Drive data are deleted or written. Legacy localStorage key is untouched.
    Store each change as one immutable Firestore document to detect divergent offline edits. */
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/13.1.0/firebase-app.js';
-import {getAuth, GoogleAuthProvider, browserLocalPersistence, setPersistence, signInWithPopup, signOut, onAuthStateChanged} from 'https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js';
+import {getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged} from 'https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js';
 import {getFirestore, collection, doc, onSnapshot, setDoc} from 'https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js';
 import {blankData, projectHistory, diffToOps, validOp, same, headsFor} from './sync-core.mjs';
 
@@ -185,7 +185,8 @@ function accountChanged(user) {
 }
 async function login() {
   try {$('auth-login').disabled=true;
-    await setPersistence(auth,browserLocalPersistence);
+    // Open the OAuth popup directly in the user click gesture (required by iOS Safari).
+    // Browser Firebase Auth defaults to persistent local sessions; do not await setPersistence here.
     await signInWithPopup(auth,provider);
   } catch(e) {alert('Google prihlásenie nebolo dokončené: '+e.message);}
   finally {$('auth-login').disabled=false;}
