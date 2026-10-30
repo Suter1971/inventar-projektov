@@ -1,13 +1,13 @@
 /* Osobné projekty — offline prevádzka; používateľské údaje sú v localStorage, nie v cache. */
 const PREFIX = 'osobne-projekty-firebase-prod-pwa-';
-const CACHE = PREFIX + 'v06-release2-ios-auth';
+const CACHE = PREFIX + 'v07-release23-tasks';
 const FIREBASE_MODULES = [
   'https://www.gstatic.com/firebasejs/13.1.0/firebase-app.js',
   'https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js',
   'https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js'
 ];
 const FILES = [
-  './', './index.html', './firebase-sync.js', './sync-core.mjs', './manifest.webmanifest',
+  './', './index.html', './firebase-sync.js?v=0.7-prod-23', './sync-core.mjs', './manifest.webmanifest',
   './icon-192.png', './icon-512.png', './icon-maskable-512.png',
   './apple-touch-icon.png', './favicon.ico', './favicon.png'
 ];
