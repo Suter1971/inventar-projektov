@@ -1,13 +1,14 @@
 /* Osobné projekty — offline prevádzka; používateľské údaje sú v localStorage, nie v cache. */
 const PREFIX = 'osobne-projekty-firebase-prod-pwa-';
-const CACHE = PREFIX + 'v07-release23-tasks';
+const CACHE = PREFIX + 'v08-release28';
 const FIREBASE_MODULES = [
   'https://www.gstatic.com/firebasejs/13.1.0/firebase-app.js',
   'https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js',
-  'https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js'
+  'https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js',
+  'https://www.gstatic.com/firebasejs/13.1.0/firebase-messaging.js'
 ];
 const FILES = [
-  './', './index.html', './firebase-sync.js?v=0.7-prod-23', './sync-core.mjs', './manifest.webmanifest',
+  './', './index.html', './firebase-sync.js?v=0.8-prod-28', './sync-core.mjs', './manifest.webmanifest',
   './icon-192.png', './icon-512.png', './icon-maskable-512.png',
   './apple-touch-icon.png', './favicon.ico', './favicon.png'
 ];
@@ -48,7 +49,22 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Static PWA files: cached for offline operation.
+  // Critical JavaScript: prefer fresh code online, preserve offline fallback.
+  // This avoids stale code after GitHub Pages deployments.
+  const criticalJs = url.origin === self.location.origin &&
+    (url.pathname.endsWith('/firebase-sync.js') || url.pathname.endsWith('/sync-core.mjs') || url.pathname.endsWith('/cloud-sync.js'));
+  if (criticalJs) {
+    event.respondWith(fetch(request).then(response => {
+      if (response.ok) {
+        const copy = response.clone();
+        event.waitUntil(caches.open(CACHE).then(cache => cache.put(request, copy)));
+      }
+      return response;
+    }).catch(async () => (await caches.match(request)) || Response.error()));
+    return;
+  }
+
+  // Remaining static PWA files: cached for offline operation.
   event.respondWith(
     caches.match(request).then(cached => cached || fetch(request).then(response => {
       if (response.ok) {
@@ -58,4 +74,32 @@ self.addEventListener('fetch', event => {
       return response;
     }))
   );
+});
+
+// Firebase Cloud Messaging background message handling (only after server setup).
+importScripts('https://www.gstatic.com/firebasejs/13.1.0/firebase-app-compat.js',
+              'https://www.gstatic.com/firebasejs/13.1.0/firebase-messaging-compat.js');
+firebase.initializeApp({
+ apiKey:'AIzaSyC44vjVPx8Q-iIIEaOuA_QvVxBGwFY5a7U',
+ authDomain:'inventar-projektov.firebaseapp.com',
+ projectId:'inventar-projektov',
+ messagingSenderId:'486989499459',
+ appId:'1:486989499459:web:0059c539ee089327ca58f6'
+});
+const messaging=firebase.messaging();
+messaging.onBackgroundMessage(payload=>{
+ // Server will send data-only payloads so the SW owns the notification exactly once.
+ const data=payload.data||{};
+ if(!data.title)return;
+ self.registration.showNotification(data.title,{
+  body:data.body||'',icon:'./icon-192.png',tag:data.tag||undefined,
+  data:{url:new URL('./',self.registration.scope).href}
+ });
+});
+self.addEventListener('notificationclick',event=>{
+ event.notification.close();
+ event.waitUntil(self.clients.matchAll({type:'window',includeUncontrolled:true}).then(async clients=>{
+  for(const client of clients){if(client.url.startsWith(self.registration.scope)){await client.focus();return;}}
+  await self.clients.openWindow(self.registration.scope);
+ }));
 });

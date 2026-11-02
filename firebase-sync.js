@@ -3,7 +3,7 @@
    Store each change as one immutable Firestore document to detect divergent offline edits. */
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/13.1.0/firebase-app.js';
 import {getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged} from 'https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js';
-import {getFirestore, collection, doc, onSnapshot, setDoc} from 'https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js';
+import {getFirestore, collection, doc, onSnapshot, setDoc, getDoc, deleteDoc} from 'https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js';
 import {blankData, projectHistory, diffToOps, validOp, same, headsFor} from './sync-core.mjs';
 
 const firebaseConfig = {
@@ -22,7 +22,10 @@ const db = getFirestore(app);
 const provider = new GoogleAuthProvider();
 const uuid = () => crypto.randomUUID();
 // Test and production MUST NOT share Firestore collections or local browser data.
-const TEST_MODE = false; // Ostrá prevádzka: používa samostatné cloudové aj lokálne úložisko.
+const TEST_MODE = false; // OSTRÁ prevádzka: changes, settings, pushDevices, produkčné localStorage.
+const NOTIF_PREF_COLLECTION = TEST_MODE ? 'testSettings' : 'settings';
+const PUSH_DEVICES_COLLECTION = TEST_MODE ? 'testPushDevices' : 'pushDevices';
+const PUBLIC_VAPID_KEY = 'BKB3wrViDITqOHa8nKWkE2aQFTch3j9IBtDKC85CJOoxmFgA7R2Bfx0kkWdpDhdQn-0-gOn9u0FOS47dG4czino';
 const CHANGES_COLLECTION = TEST_MODE ? 'testChanges' : 'changes';
 const STORAGE_PREFIX = TEST_MODE ? 'inventar-firebase-revisions-test-v1:' : 'inventar-firebase-revisions-v1:';
 const DEVICE_KEY = 'inventar-firebase-device-v1';
@@ -159,12 +162,158 @@ function subscribe(myGeneration,myUid) {
     try {persist();applyRevisions();if(initialized)flush();} catch(e){status('Nepodarilo sa uložiť údaje zo servera. '+e.message,true);}
   },err=>status('Spojenie s databázou nefunguje: '+err.message,true));
 }
+
+// v0.7 – Independent settings, never written to immutable revision history.
+const cloudDialog=$('cloud-dialog');
+const settingsPanel=document.createElement('section');
+settingsPanel.innerHTML=`<hr class="divider"><h3>Upozornenia (0.8)</h3>
+  <p class="cloud-help">Push upozornenia na tomto zariadení:</p>
+  <button id="register-push-device" type="button">Povoliť upozornenia na tomto telefóne</button>
+  <button id="unregister-push-device" type="button" hidden>Vypnúť upozornenia na tomto telefóne</button>
+  <p id="notifications-status" class="cloud-help" role="status"></p>`;
+cloudDialog.insertBefore(settingsPanel,$('cloud-close').parentElement);
+const emailDialog=document.createElement('dialog');
+emailDialog.id='email-notifications-dialog';
+emailDialog.innerHTML=`<h2>Pondelkový e-mailový prehľad</h2>
+ <label style="display:flex;align-items:center;gap:9px"><input type="checkbox" id="weekly-email-enabled" style="width:18px;height:18px"> Zapnúť pondelkový e-mailový prehľad</label>
+ <p class="cloud-help">Každý pondelok o 09:00. Nedokončené úlohy v tomto týždni a počet úloh na nasledujúci týždeň.</p>
+ <p id="email-notifications-status" class="cloud-help" role="status"></p>
+ <div class="modal-actions"><button id="email-settings-close" type="button">Zavrieť</button></div>`;
+document.body.append(emailDialog);
+$('email-settings-button').addEventListener('click',()=>emailDialog.showModal());
+$('email-settings-close').addEventListener('click',()=>emailDialog.close());
+const notificationsStatus=()=>$('notifications-status');
+function notifyStatus(s){notificationsStatus().textContent=s;$('email-notifications-status').textContent=s;}
+let notificationUserVersion=0;
+let storedPushToken=null;
+// The explicit click is the user's opt-in. No automatic browser permission prompt.
+let pushOptInRequested=false;
+let pushRegistrationPromise=null;
+async function getMessagingSdk(){return import('https://www.gstatic.com/firebasejs/13.1.0/firebase-messaging.js');}
+async function loadNotificationSettings(){
+ const thisVersion=++notificationUserVersion, current=uid;
+ $('weekly-email-enabled').disabled=!current;
+ $('register-push-device').disabled=!current;
+ if(!current){$('weekly-email-enabled').checked=false;notifyStatus('Prihlás sa do účtu.');return;}
+ try{
+  const [prefs, device]=await Promise.all([
+   getDoc(doc(db,'users',current,NOTIF_PREF_COLLECTION,'notifications')),
+   getDoc(doc(db,'users',current,PUSH_DEVICES_COLLECTION,deviceId))]);
+  if(thisVersion!==notificationUserVersion||current!==uid)return;
+  $('weekly-email-enabled').checked=prefs.data()?.weeklyEmailEnabled===true;
+  storedPushToken=device.data()?.token||null;
+  $('unregister-push-device').hidden=!storedPushToken;
+  notifyStatus(storedPushToken?'Zariadenie registrované. Upozornenia sú zapnuté.':'Zariadenie zatiaľ nie je registrované.');
+ }catch(e){if(thisVersion===notificationUserVersion)notifyStatus('Načítanie nastavení zlyhalo: '+e.message);}
+}
+$('weekly-email-enabled').addEventListener('change',async e=>{
+ const userId=uid, enabled=e.target.checked; e.target.disabled=true;
+ try{
+  if(!userId)throw Error('Nie si prihlásený.');
+  await setDoc(doc(db,'users',userId,NOTIF_PREF_COLLECTION,'notifications'),{weeklyEmailEnabled:enabled,updatedAt:new Date().toISOString()},{merge:true});
+  if(uid===userId)notifyStatus(enabled?'E-mailový prehľad zapnutý.':'E-mailový prehľad vypnutý.');
+ }catch(err){if(uid===userId){e.target.checked=!enabled;notifyStatus('Nepodarilo sa uložiť: '+err.message);}}
+ finally{e.target.disabled=!uid;}
+});
+
+// Only finish the Firebase registration after the browser has actually granted permission.
+// Sharing the in-flight promise prevents duplicate token writes if a Chrome permission
+// change event and the permission request resolve at nearly the same moment.
+async function finishPushRegistration(userId){
+ if(pushRegistrationPromise)return pushRegistrationPromise;
+ const operation=(async()=>{
+  if(!userId||uid!==userId)throw Error('Používateľský účet sa zmenil.');
+  if(Notification.permission!=='granted')throw Error('Chrome zatiaľ nepovolil oznámenia.');
+  notifyStatus('Povolenie udelené. Registrujem telefón vo Firebase…');
+  const sdk=await getMessagingSdk();
+  if(!await sdk.isSupported())throw Error('Firebase Messaging nie je v tomto prehliadači dostupné.');
+  const reg=await navigator.serviceWorker.ready;
+  const token=await sdk.getToken(sdk.getMessaging(app),{vapidKey:PUBLIC_VAPID_KEY,serviceWorkerRegistration:reg});
+  if(!token)throw Error('Telefón nevrátil FCM token.');
+  if(uid!==userId)throw Error('Medzitým bol zmenený účet.');
+  await setDoc(doc(db,'users',userId,PUSH_DEVICES_COLLECTION,deviceId),{token,deviceId,updatedAt:new Date().toISOString(),enabled:true,platform:navigator.userAgent.slice(0,160)});
+  if(uid!==userId)return;
+  storedPushToken=token;
+  $('unregister-push-device').hidden=false;
+  notifyStatus('Telefón je registrovaný. Upozornenia sú zapnuté.');
+ })();
+ pushRegistrationPromise=operation;
+ try{return await operation;}
+ finally{if(pushRegistrationPromise===operation)pushRegistrationPromise=null;}
+}
+function permissionAdvice(result,before){
+ const now=Notification.permission;
+ if(now==='denied')return 'Chrome blokuje oznámenia pre túto webovú adresu. Kód aplikácie to nemôže obísť. Povolenie treba zmeniť v nastaveniach webu v Chrome.';
+ if(result==='default')return 'Chrome zatiaľ neudelil povolenie (žiadosť mohla vypršať bez odpovede). Ak sa ukáže nenápadná výzva, povoľ ju; aplikácia zmenu zachytí.';
+ return `Chrome požiadavku zamietol (predtým: ${before}; odpoveď: ${result}; aktuálny stav: ${now}). Bez povolenia sa Firebase registrácia nespustí.`;
+}
+$('register-push-device').addEventListener('click',async e=>{
+ const userId=uid;
+ if(!userId){notifyStatus('Prihlás sa do účtu.');return;}
+ if(!('Notification' in window)||!('serviceWorker' in navigator)||!window.isSecureContext){notifyStatus('Tento prehliadač nepodporuje Web Push.');return;}
+ if(window.top!==window.self){notifyStatus('Oznámenia sa nedajú povoliť z vnoreného okna. Otvor aplikáciu priamo v Chrome.');return;}
+ const before=Notification.permission;
+ pushOptInRequested=true;
+ e.target.disabled=true;
+ try{
+  if(before==='denied'){
+   notifyStatus(permissionAdvice('denied',before));
+   return; // Never repeatedly prompt a blocked origin.
+  }
+  if(before==='default'){
+   // Must be invoked synchronously from the real user click for mobile browsers.
+   const permissionPromise=Notification.requestPermission();
+   const result=await permissionPromise;
+   if(result!=='granted' && Notification.permission!=='granted'){
+    notifyStatus(permissionAdvice(result,before));
+    return;
+   }
+  }
+  await finishPushRegistration(userId);
+ }catch(err){if(uid===userId)notifyStatus('Registrácia: '+err.message);}
+ finally{e.target.disabled=!uid;}
+});
+
+// Chrome on Android (from version 155) may show a non-blocking permission prompt.
+// Its initial request can end with "default", and permission can be granted later
+// via Chrome's site controls. Listen to that change after explicit opt-in.
+async function watchPushPermission(){
+ if(!('Notification' in window)||!navigator.permissions?.query)return;
+ try{
+  const state=await navigator.permissions.query({name:'notifications'});
+  const changed=()=>{
+   if(!pushOptInRequested||!uid)return;
+   if(state.state==='granted'){
+    const current=uid;
+    finishPushRegistration(current).catch(err=>{if(uid===current)notifyStatus('Registrácia: '+err.message);});
+   }else if(state.state==='denied')notifyStatus(permissionAdvice('denied',Notification.permission));
+  };
+  if(state.addEventListener)state.addEventListener('change',changed);
+  else state.onchange=changed;
+ }catch(_){/* Some browsers do not support querying notification permissions. */}
+}
+watchPushPermission();
+$('unregister-push-device').addEventListener('click',async e=>{
+ const userId=uid;e.target.disabled=true;
+ pushOptInRequested=false;
+ try{
+  if(!userId)throw Error('Nie si prihlásený.');
+  // Delete server-side mapping first. The push subscription is not enough to authorize delivery.
+  await deleteDoc(doc(db,'users',userId,PUSH_DEVICES_COLLECTION,deviceId));
+  if(storedPushToken){try{const sdk=await getMessagingSdk();await sdk.deleteToken(sdk.getMessaging(app));}catch(_){/* cloud record has already been removed */}}
+  storedPushToken=null;$('unregister-push-device').hidden=true;
+  notifyStatus('Upozornenia na tomto telefóne vypnuté.');
+ }catch(err){notifyStatus('Vypnutie sa nepodarilo: '+err.message);}
+ finally{e.target.disabled=false;}
+});
+
 function accountChanged(user) {
+  pushOptInRequested=false;storedPushToken=null;
   ++generation;
   if(unsub){unsub();unsub=null;}
   uid=null;ops={};pending=new Set();initialized=false;onlineSnapshot=false;
   conflicts=[];lastView=blankData();readyForEdits=false;recoveryBlocked=false;
-  if(!user) {bridge.switchAccount(null);updateUi();return;}
+  if(!user) {bridge.switchAccount(null);updateUi();loadNotificationSettings();return;}
   try {
     restore(user.uid);uid=user.uid;
     // Each user has a completely separate local dataset. Legacy v0.5 key is untouched.
@@ -176,6 +325,7 @@ function accountChanged(user) {
     }
     applyRevisions();
     subscribe(generation,uid);
+    loadNotificationSettings();
     if(initialized)flush();
   } catch(e) {
     uid=null;bridge.switchAccount(null);
