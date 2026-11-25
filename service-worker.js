@@ -1,6 +1,6 @@
 /* Osobné projekty — offline prevádzka; používateľské údaje sú v localStorage, nie v cache. */
 const PREFIX = 'osobne-projekty-firebase-prod-pwa-';
-const CACHE = PREFIX + 'v08-release28';
+const CACHE = PREFIX + 'v08-release29-offline-fix';
 const FIREBASE_MODULES = [
   'https://www.gstatic.com/firebasejs/13.1.0/firebase-app.js',
   'https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js',
@@ -8,7 +8,7 @@ const FIREBASE_MODULES = [
   'https://www.gstatic.com/firebasejs/13.1.0/firebase-messaging.js'
 ];
 const FILES = [
-  './', './index.html', './firebase-sync.js?v=0.8-prod-28', './sync-core.mjs', './manifest.webmanifest',
+  './', './index.html', './firebase-sync.js?v=0.8-prod-29', './sync-core.mjs', './manifest.webmanifest', './manifest.webmanifest?v=0829',
   './icon-192.png', './icon-512.png', './icon-maskable-512.png',
   './apple-touch-icon.png', './favicon.ico', './favicon.png'
 ];
@@ -44,7 +44,10 @@ self.addEventListener('fetch', event => {
           event.waitUntil(caches.open(CACHE).then(cache => cache.put('./index.html', copy)));
         }
         return response;
-      }).catch(async () => (await caches.match('./index.html')) || Response.error())
+      }).catch(async () => {
+        const cache = await caches.open(CACHE);
+        return (await cache.match('./index.html')) || Response.error();
+      })
     );
     return;
   }
@@ -60,19 +63,22 @@ self.addEventListener('fetch', event => {
         event.waitUntil(caches.open(CACHE).then(cache => cache.put(request, copy)));
       }
       return response;
-    }).catch(async () => (await caches.match(request)) || Response.error()));
+    }).catch(async () => {
+      const cache = await caches.open(CACHE);
+      return (await cache.match(request)) || Response.error();
+    }));
     return;
   }
 
   // Remaining static PWA files: cached for offline operation.
   event.respondWith(
-    caches.match(request).then(cached => cached || fetch(request).then(response => {
-      if (response.ok) {
-        const copy = response.clone();
-        event.waitUntil(caches.open(CACHE).then(cache => cache.put(request, copy)));
-      }
+    caches.open(CACHE).then(async cache => {
+      const cached = await cache.match(request);
+      if (cached) return cached;
+      const response = await fetch(request);
+      if (response.ok) event.waitUntil(cache.put(request, response.clone()));
       return response;
-    }))
+    })
   );
 });
 
